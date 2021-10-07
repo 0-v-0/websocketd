@@ -1,14 +1,14 @@
 module websocketd.checkpoint;
 
+import std.format : format;
+
 struct Checkpoint {
-   string name;
-   string condition;
-   string code;
+    string name;
+    string condition;
+    string code;
 
-   string toDCode(string datasource, string source, string valuename) {
-      import std.format : format;
-
-      return format(`
+    string toDCode(string datasource, string source, string valuename) {
+        return format(`
             case "%s":
             if (%s) {
                 %s
@@ -21,14 +21,13 @@ struct Checkpoint {
             }
             case "__prev_%s":
         `, name, condition, code, name, source, datasource, source, valuename, name);
-   }
+    }
 }
 
 string CheckpointSetup(T)(string datasource, string valuename, string source, Checkpoint[] checkpoints...) {
-   import std.array : join;
-   import std.algorithm : map;
-   import std.format : format;
-   string f = format(`
+    import std.array : join;
+    import std.algorithm : map;
+    string f = format(`
         static string __prevState = "start";
         static ubyte[][string] __dataBySource;
         static %s[string] __frames;

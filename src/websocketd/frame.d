@@ -20,13 +20,13 @@ struct Frame {
    ubyte[] data;
 
    ulong remaining() @property {
-      return this.length - this.data.length;
+      return length - data.length;
    }
 
    ubyte[] serialize() {
       ubyte[] result = [];
 
-      result ~= cast(ubyte)(fin ? 1 << 7 : 0) ^ cast(ubyte)op;
+      result ~= (cast(ubyte)fin << 7) ^ op;
 
       ubyte b2 = masked ? 1 << 7 : 0;
       if (length < 126) {
@@ -41,17 +41,16 @@ struct Frame {
          result ~= b2 ^ 127;
          ubyte[8] lens;
          for (size_t i = 0; i < 8; i++)
-            lens[7 - i] = cast(ubyte)(length >> (i * 8)) & 0b11111111;
+            lens[7 - i] = cast(ubyte)(length >> (i << 3)) & 0b11111111;
          result ~= lens;
       }
 
-      if (masked)
+      if (masked) {
          result ~= mask;
 
-      if (masked)
          for (size_t i = 0; i < data.length; i++)
-            result ~= data[i] ^ mask[i % 4];
-      else
+            result ~= data[i] ^ mask[i & 3];
+      } else
          result ~= data;
 
       return result;
@@ -78,7 +77,7 @@ Frame parse(string source, ubyte[] data) {
    // "source" is the name of a "session identifier"
    mixin(CheckpointSetup!Frame("data", "frame", "source", // fin_rsv_opcode is the name of the first checkpoint
          // `data.length >= 1` is the condition to enter this state
-         // (otherwise what's after the mixin gets executed)
+         // (otherwise what's after the mixingets executed)
          "fin_rsv_opcode".Checkpoint(q{ data.length >= 1 }, q{
             frame = Frame.init;
             ubyte b = data.next; // next() modifies `data` by consuming the first byte
@@ -89,13 +88,13 @@ Frame parse(string source, ubyte[] data) {
             ubyte b = data.next;
             frame.masked = cast(bool) (b >>> 7);
             frame.length = cast(ulong) (b & 0b1111111);
-            if (frame.length <= 125) mixin (changeState("maskOn_mask"));
-            if (frame.length == 127) mixin (changeState("len127_ext_len"));
+            if (frame.length <= 125) mixin(changeState("maskOn_mask"));
+            if (frame.length == 127) mixin(changeState("len127_ext_len"));
         }), "len126_ext_len".Checkpoint(q{ data.length >= 2 }, q{
             frame.length = cast(ulong) data.next;
             frame.length <<= 8;
             frame.length += cast(ulong) data.next;
-            mixin (changeState("maskOn_mask")); // edge case: length=127
+            mixin(changeState("maskOn_mask")); // edge case: length=127
         }), "len127_ext_len".Checkpoint(q{ data.length >= 8 }, q{
             frame.length = cast(ulong) data.next;
             for (int i=0; i<7; i++) {
@@ -122,7 +121,7 @@ Frame parse(string source, ubyte[] data) {
         }), "done".Checkpoint(q{ true }, q{
             // to allow for streaming we have this changeState(..) loop
             if (frame.remaining > 0)
-                mixin (changeState("message_extraction"));
+                mixin(changeState("message_extraction"));
             frame.done = true;
         })));
 

@@ -12,32 +12,31 @@ class WebSocketState {
    Socket socket;
    bool handshaken;
    Frame[] frames = [];
-   public immutable PeerID id;
-   public immutable Address address;
-   public string path;
+   immutable PeerID id;
+   immutable Address address;
+   string path;
 
    @disable this();
 
    this(PeerID id, Socket socket) {
       this.socket = socket;
-      this.handshaken = false;
       this.id = id;
-      this.address = cast(immutable Address)(socket.remoteAddress);
+      this.address = cast(immutable Address)socket.remoteAddress;
    }
 
-   public void performHandshake(ubyte[] message) {
+   void performHandshake(ubyte[] message) {
       import std.base64 : Base64;
       import std.digest.sha : sha1Of;
       import std.conv : to;
 
       assert(!handshaken);
-      enum MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-      enum KEY = "Sec-WebSocket-Key";
+      enum MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
+           KEY = "Sec-WebSocket-Key";
       Request request = Request.parse(message);
       if (!request.done || KEY !in request.headers)
          return;
       this.path = request.path;
-      string accept = Base64.encode(sha1Of(request.headers[KEY] ~ MAGIC)).to!string;
+      auto accept = Base64.encode(sha1Of(request.headers[KEY] ~ MAGIC));
       assert(socket.isAlive);
       socket.send(
             "HTTP/1.1 101 Switching Protocol\r\n" ~ "Upgrade: websocket\r\n" ~ "Connection: Upgrade\r\n"
@@ -59,9 +58,7 @@ abstract class WebSocketServer {
 
    private static PeerID counter = 0;
 
-   this() {
-      listener = new TcpSocket();
-   }
+   this() { listener = new TcpSocket(); }
 
    private void add(Socket socket) {
       if (sockets.length >= maxConnections) {
@@ -194,7 +191,7 @@ abstract class WebSocketServer {
       sockets[dest].socket.send(serial);
    }
 
-   public void run(ushort port, size_t maxConnections, size_t bufferSize = 1024)() {
+   public void run(ushort port, size_t maxConnections = 1000, size_t bufferSize = 1024)() {
       this.maxConnections = maxConnections;
 
       listener.blocking = false;
@@ -205,7 +202,7 @@ abstract class WebSocketServer {
       infof("Maximum allowed connections: %d", maxConnections);
 
       auto set = new SocketSet(maxConnections + 1);
-      while (true) {
+      for (;;) {
          set.add(listener);
          foreach (id, s; sockets)
             set.add(s.socket);
@@ -224,9 +221,8 @@ abstract class WebSocketServer {
             remove(socket);
          }
 
-         if (set.isSet(listener)) {
+         if (set.isSet(listener))
             add(listener.accept());
-         }
 
          set.reset();
       }
