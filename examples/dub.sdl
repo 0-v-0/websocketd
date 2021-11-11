@@ -14,4 +14,3 @@ configuration "broadcast" {
    targetType "executable"
    versions "broadcast"
 }
-
