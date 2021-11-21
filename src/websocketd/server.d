@@ -15,32 +15,53 @@ class WebSocketState {
 	immutable PeerID id;
 	immutable Address address;
 	string path;
+	string protocol; // subprotocol
 
 	@disable this();
 
-	this(PeerID id, Socket socket) {
+	this(PeerID id, Socket socket, string subprotocol = "") {
 		this.socket = socket;
 		this.id = id;
 		this.address = cast(immutable Address)socket.remoteAddress;
+		protocol = subprotocol;
 	}
 
 	void performHandshake(ubyte[] message) {
+		import std.algorithm;
+		import std.array;
 		import std.base64 : Base64;
 		import std.digest.sha : sha1Of;
+		import std.datetime;
 		import std.conv : to;
 
 		assert(!handshaken);
 		enum MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
-			 KEY = "Sec-WebSocket-Key";
+			 KEY = "Sec-WebSocket-Key",
+			 SUBP = "Sec-Websocket-Protocol";
 		auto request = Request.parse(message);
-		if (!request.done || KEY !in request.headers)
+		if (!request.done)
 			return;
-		this.path = request.path;
-		auto accept = Base64.encode(sha1Of(request.headers[KEY] ~ MAGIC));
+		auto key = KEY in request.headers;
+		if (!key)
+			return;
+		path = request.path;
+
+		auto accept = Base64.encode(sha1Of(*key ~ MAGIC));
+		if (protocol.length) {
+			if (auto subp = SUBP in request.headers) {
+				auto arr = (*subp).split(',');
+				if(!arr.canFind(protocol)) {
+					protocol = "";
+					return;
+				}
+			}
+			accept ~= "\r\n" ~ SUBP ~ ": " ~ protocol;
+		}
 		assert(socket.isAlive);
 		socket.send(
 			"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
 			~ accept ~ "\r\n\r\n");
+		socket.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, dur!"seconds"(30));
 		handshaken = true;
 	}
 }
