@@ -1,5 +1,6 @@
 module websocketd.server;
 
+import std.datetime;
 import std.socket;
 import std.experimental.logger;
 
@@ -15,7 +16,9 @@ class WebSocketState {
 	immutable PeerID id;
 	immutable Address address;
 	string path;
+	string[string] headers;
 	string protocol; // subprotocol
+	Duration timeout = dur!"seconds"(30);
 
 	@disable this();
 
@@ -31,7 +34,6 @@ class WebSocketState {
 		import std.array;
 		import std.base64 : Base64;
 		import std.digest.sha : sha1Of;
-		import std.datetime;
 		import std.conv : to;
 
 		assert(!handshaken);
@@ -44,6 +46,7 @@ class WebSocketState {
 		auto key = KEY in request.headers;
 		if (!key)
 			return;
+		headers = request.headers;
 		path = request.path;
 
 		auto accept = Base64.encode(sha1Of(*key ~ MAGIC));
@@ -51,7 +54,7 @@ class WebSocketState {
 			if (auto subp = SUBP in request.headers) {
 				auto arr = (*subp).split(',');
 				if(!arr.canFind(protocol)) {
-					protocol = "";
+					protocol = *subp;
 					return;
 				}
 			}
@@ -61,7 +64,7 @@ class WebSocketState {
 		socket.send(
 			"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
 			~ accept ~ "\r\n\r\n");
-		socket.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, dur!"seconds"(30));
+		socket.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, timeout);
 		handshaken = true;
 	}
 }
@@ -105,8 +108,8 @@ abstract class WebSocketServer {
 		import std.conv : to;
 		import std.algorithm : swap;
 
-		string processId = typeof(this).stringof ~ socket.id.to!string;
 		if (socket.handshaken) {
+			auto processId = typeof(this).stringof ~ socket.id.to!string;
 			Frame prevFrame = processId.parse(message);
 			Frame newFrame, temp;
 			do {
@@ -117,7 +120,7 @@ abstract class WebSocketServer {
 		} else {
 			socket.performHandshake(message);
 			if (socket.handshaken)
-				infof("Handshake with %d done (path=%s)", socket.id, socket.path);
+				infof("Handshake with %u done (path=%s)", socket.id, socket.path);
 			onOpen(socket.id, socket.path);
 		}
 	}
