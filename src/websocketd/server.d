@@ -1,5 +1,6 @@
 module websocketd.server;
 
+import std.array;
 import std.datetime;
 import std.socket;
 import std.experimental.logger;
@@ -18,7 +19,7 @@ class WebSocketState {
 	string path;
 	string[string] headers;
 	string protocol; // subprotocol
-	Duration timeout = dur!"seconds"(30);
+	Duration timeout = 30.seconds;
 
 	@disable this();
 
@@ -35,11 +36,12 @@ class WebSocketState {
 		import std.base64 : Base64;
 		import std.digest.sha : sha1Of;
 		import std.conv : to;
+		import std.uni : toLower;
 
 		assert(!handshaken);
 		enum MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
-			 KEY = "Sec-WebSocket-Key",
-			 SUBP = "Sec-Websocket-Protocol";
+			 KEY = "Sec-WebSocket-Key".toLower,
+			 SUBP = "Sec-Websocket-Protocol".toLower;
 		auto request = Request.parse(message);
 		if (!request.done)
 			return;
@@ -69,10 +71,12 @@ class WebSocketState {
 	}
 }
 
+alias WebSocketState WSState;
+
 abstract class WebSocketServer {
 	import std.traits;
 
-	protected WebSocketState[PeerID] sockets;
+	protected WSState[PeerID] sockets;
 	private Socket listener;
 	size_t maxConnections;
 
@@ -92,11 +96,11 @@ abstract class WebSocketServer {
 			return;
 		}
 		infof("Acception connection from %s (id=%u)", socket.remoteAddress, counter);
-		sockets[counter] = new WebSocketState(counter, socket);
+		sockets[counter] = new WSState(counter, socket);
 		counter++;
 	}
 
-	void remove(WebSocketState socket) {
+	void remove(WSState socket) {
 		sockets.remove(socket.id);
 		infof("Closing connection with client id %u", socket.id);
 		if (socket.socket.isAlive)
@@ -104,14 +108,14 @@ abstract class WebSocketServer {
 		onClose(socket.id);
 	}
 
-	private void handle(WebSocketState socket, ubyte[] message) {
-		import std.conv : to;
+	private void handle(WSState socket, ubyte[] message) {
 		import std.algorithm : swap;
+		import std.conv : to;
 
 		if (socket.handshaken) {
 			auto processId = typeof(this).stringof ~ socket.id.to!string;
 			Frame prevFrame = processId.parse(message);
-			Frame newFrame, temp;
+			Frame newFrame;
 			do {
 				handleFrame(socket, prevFrame);
 				newFrame = processId.parse([]);
@@ -125,7 +129,7 @@ abstract class WebSocketServer {
 		}
 	}
 
-	private void handleFrame(WebSocketState socket, Frame frame) {
+	private void handleFrame(WSState socket, Frame frame) {
 		tracef("From client %s received frame: done=%s; fin=%s; op=%s; length=%u",
 			socket.id, frame.done, frame.fin, frame.op, frame.length);
 		if (!frame.done)
@@ -142,7 +146,7 @@ abstract class WebSocketServer {
 		}
 	}
 
-	private void handleCont(WebSocketState socket, Frame frame)
+	private void handleCont(WSState socket, Frame frame)
 	in (socket.frames.length > 0)
 	{
 		if (!frame.fin) {
@@ -150,18 +154,19 @@ abstract class WebSocketServer {
 			return;
 		}
 		Op originalOp = socket.frames[0].op;
-		ubyte[] data = [];
+		auto data = appender!(ubyte[])();
+		data.reserve(socket.frames.length);
 		for (size_t i = 0; i < socket.frames.length; i++)
 			data ~= socket.frames[i].data;
 		data ~= frame.data;
 		socket.frames = [];
 		if (originalOp == Op.TEXT)
-			onTextMessage(socket.id, cast(string)data);
+			onTextMessage(socket.id, cast(string)data[]);
 		else if (originalOp == Op.BINARY)
-			onBinaryMessage(socket.id, data);
+			onBinaryMessage(socket.id, data[]);
 	}
 
-	private void handleText(WebSocketState socket, Frame frame)
+	private void handleText(WSState socket, Frame frame)
 	in (socket.frames.length == 0)
 	{
 		if (frame.fin)
@@ -170,7 +175,7 @@ abstract class WebSocketServer {
 			socket.frames ~= frame;
 	}
 
-	private void handleBinary(WebSocketState socket, Frame frame)
+	private void handleBinary(WSState socket, Frame frame)
 	in (socket.frames.length == 0)
 	{
 		if (frame.fin)

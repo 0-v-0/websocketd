@@ -2,6 +2,7 @@ module websocketd.request;
 
 import std.ascii : isWhite;
 import std.algorithm : endsWith;
+import std.uni : toLower;
 
 struct Request {
 	string method, path, httpVersion;
@@ -18,69 +19,59 @@ struct Request {
 		if (!msg.endsWith("\r\n\r\n"))
 			return req;
 
-		size_t i = 0;
-		string token;
+		size_t i = 0, pos;
 
 		// get method
-		for (; i < msg.length; i++) {
+		for (; i < msg.length; i++)
 			if (msg[i] == ' ')
 				break;
-			token ~= msg[i];
-		}
-		i++; // skip whitespace
-		req.method = token;
-		token = "";
+
+		req.method = msg[0..i];
+		pos = ++i; // skip whitespace
 
 		// get path
-		for (; i < msg.length; i++) {
+		for (; i < msg.length; i++)
 			if (msg[i] == ' ')
 				break;
-			token ~= msg[i];
-		}
-		i++;
-		req.path = token;
-		token = "";
+
+		req.path = msg[pos..i];
+		pos = ++i;
 
 		// get version
-		for (; i < msg.length; i++) {
+		for (; i < msg.length; i++)
 			if (msg[i] == '\r')
 				break;
-			token ~= msg[i];
-		}
+
 		i++; // skip \r
 		if (msg[i] != '\n')
 			return req;
-		i++;
-		req.httpVersion = token;
-		token = "";
+		req.httpVersion = msg[pos..i-1];
+		pos = i++;
 
 		// get headers
-		string key = "";
+		string key;
 		for (; i < msg.length; i++) {
-			token = "";
-			key = "";
 			if (msg[i] == '\r')
 				break;
-			for (; i < msg.length; i++) {
+			pos = i;
+			for (; i < msg.length; i++)
 				if (msg[i] == ':' || msg[i].isWhite)
 					break;
-				token ~= msg[i];
-			}
+
+			key = msg[pos..i];
 			i++;
-			key = token;
-			token = "";
 			for (; i < msg.length; i++)
 				if (!msg[i].isWhite)
 					break; // ignore whitespace
-			for (; i < msg.length; i++) {
+			pos = i;
+			for (; i < msg.length; i++)
 				if (msg[i] == '\r')
 					break;
-				token ~= msg[i];
-			}
+
 			i++;
 			if (msg[i] != '\n')
 				return req;
-			req.headers[key] = token;
+			req.headers[key.toLower] = msg[pos..i-1];
 		}
 
 		i++;
