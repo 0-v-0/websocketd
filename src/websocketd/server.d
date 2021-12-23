@@ -1,14 +1,15 @@
 module websocketd.server;
 
-import std.array;
-import std.datetime;
-import std.socket;
-import std.experimental.logger;
+import
+	std.array,
+	std.datetime,
+	std.socket,
+	std.experimental.logger,
+	websocketd.request,
+	websocketd.frame;
 
-import websocketd.request;
-import websocketd.frame;
-
-alias PeerID = size_t;
+alias PeerID = size_t,
+	  ReqHandler = void function(WebSocketState, Request);
 
 class WebSocketState {
 	Socket socket;
@@ -19,54 +20,59 @@ class WebSocketState {
 	string path;
 	string[string] headers;
 	string protocol; // subprotocol
-	Duration timeout = 30.seconds;
+	enum timeout = 30.seconds;
 
 	@disable this();
 
 	this(PeerID id, Socket socket, string subprotocol = "") {
 		this.socket = socket;
 		this.id = id;
-		this.address = cast(immutable Address)socket.remoteAddress;
+		address = cast(immutable Address)socket.remoteAddress;
 		protocol = subprotocol;
 	}
 
-	void performHandshake(ubyte[] message) {
+	void performHandshake(ubyte[] message, ReqHandler handler = null)
+	in(!handshaken) {
 		import std.algorithm;
-		import std.array;
 		import std.base64 : Base64;
 		import std.digest.sha : sha1Of;
 		import std.conv : to;
 		import std.uni : toLower;
 
-		assert(!handshaken);
 		enum MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
 			 KEY = "Sec-WebSocket-Key".toLower,
 			 SUBP = "Sec-Websocket-Protocol".toLower;
 		auto request = Request.parse(message);
 		if (!request.done)
 			return;
-		auto key = KEY in request.headers;
-		if (!key)
-			return;
-		headers = request.headers;
-		path = request.path;
 
-		auto accept = Base64.encode(sha1Of(*key ~ MAGIC));
+		headers = request.headers;
+		auto key = KEY in headers;
+		if (!key) {
+			if (handler)
+				handler(this, request);
+			return;
+		}
+
 		if (protocol.length) {
-			if (auto subp = SUBP in request.headers) {
+			if (auto subp = SUBP in headers) {
 				auto arr = (*subp).split(',');
-				if(!arr.canFind(protocol)) {
+				if (!arr.canFind(protocol)) {
 					protocol = *subp;
 					return;
 				}
 			}
-			accept ~= "\r\n" ~ SUBP ~ ": " ~ protocol;
 		}
 		assert(socket.isAlive);
-		socket.send(
-			"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
-			~ accept ~ "\r\n\r\n");
+		socket.send("HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ");
+		socket.send(Base64.encode(sha1Of(*key ~ MAGIC)));
+		if (protocol.length) {
+			socket.send("\r\n" ~ SUBP ~ ": ");
+			socket.send(protocol);
+		}
+		socket.send("\r\n\r\n");
 		socket.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, timeout);
+		path = request.path;
 		handshaken = true;
 	}
 }
@@ -74,18 +80,17 @@ class WebSocketState {
 alias WebSocketState WSState;
 
 abstract class WebSocketServer {
-	import std.traits;
-
 	protected WSState[PeerID] sockets;
 	private Socket listener;
 	size_t maxConnections;
+	ReqHandler handler;
 
 	abstract void onOpen(PeerID s, string path);
 	abstract void onTextMessage(PeerID s, string s);
 	abstract void onBinaryMessage(PeerID s, ubyte[] o);
 	abstract void onClose(PeerID s);
 
-	protected static PeerID counter = 0;
+	protected static PeerID counter;
 
 	this() { listener = new TcpSocket(); }
 
@@ -95,14 +100,14 @@ abstract class WebSocketServer {
 			socket.close();
 			return;
 		}
-		infof("Acception connection from %s (id=%u)", socket.remoteAddress, counter);
+		infof("Acception connection from %s (#%u)", socket.remoteAddress, counter);
 		sockets[counter] = new WSState(counter, socket);
 		counter++;
 	}
 
 	void remove(WSState socket) {
 		sockets.remove(socket.id);
-		infof("Closing connection with client id %u", socket.id);
+		infof("Closing connection with client #%u", socket.id);
 		if (socket.socket.isAlive)
 			socket.socket.close();
 		onClose(socket.id);
@@ -122,7 +127,7 @@ abstract class WebSocketServer {
 				swap(newFrame, prevFrame);
 			} while (newFrame != prevFrame);
 		} else {
-			socket.performHandshake(message);
+			socket.performHandshake(message, handler);
 			if (socket.handshaken)
 				infof("Handshake with %u done (path=%s)", socket.id, socket.path);
 			onOpen(socket.id, socket.path);
@@ -184,7 +189,9 @@ abstract class WebSocketServer {
 			socket.frames ~= frame;
 	}
 
-	public void send(T)(PeerID dest, T msg){
+	public void send(T)(PeerID dest, T msg) {
+		import std.traits;
+
 		auto dst = dest in sockets;
 		if (!dst) {
 			warningf("Tried to send a message to %s which is not connected", dest);
@@ -201,7 +208,9 @@ abstract class WebSocketServer {
 		}
 		auto data = frame.serialize;
 		tracef("Sending %u bytes to %s in one frame of %u bytes long", bytes.length, dest, data.length);
-		(*dst).socket.send(data);
+		synchronized((*dst).socket) {
+			(*dst).socket.send(data);
+		}
 	}
 
 	public void run(ushort port, size_t maxConnections = 1000, size_t bufferSize = 1024)() {
@@ -209,7 +218,7 @@ abstract class WebSocketServer {
 
 		listener.blocking = false;
 		listener.bind(new InternetAddress("127.0.0.1", port));
-		listener.listen(10);
+		listener.listen(128);
 
 		infof("Listening on port: %u", port);
 		infof("Maximum allowed connections: %u", maxConnections);
@@ -226,7 +235,7 @@ abstract class WebSocketServer {
 					continue;
 				ubyte[bufferSize] buffer;
 				long receivedLength = socket.socket.receive(buffer[]);
-				tracef("Received %u bytes from %s", receivedLength, socket.id);
+				tracef("Received %u bytes from %u", receivedLength, socket.id);
 				if (receivedLength > 0)
 					handle(socket, buffer[0 .. receivedLength]);
 				else

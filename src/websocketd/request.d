@@ -12,7 +12,7 @@ struct Request {
 
 	static Request parse(ubyte[] bytes) {
 		static ubyte[] data;
-		static Request req = Request();
+		static Request req;
 
 		data ~= bytes;
 		auto msg = cast(string)data;
