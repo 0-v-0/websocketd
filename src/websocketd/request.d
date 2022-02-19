@@ -10,7 +10,7 @@ struct Request {
 	string message;
 	bool done;
 
-	static Request parse(ubyte[] bytes) {
+	static Request parse(in ubyte[] bytes) nothrow {
 		static ubyte[] data;
 		static Request req;
 
@@ -71,7 +71,9 @@ struct Request {
 			i++;
 			if (msg[i] != '\n')
 				return req;
-			req.headers[key.toLower] = msg[pos..i-1];
+			try
+				req.headers[key.toLower] = msg[pos..i-1];
+			catch(Exception) {}
 		}
 
 		i++;

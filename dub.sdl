@@ -1,6 +1,5 @@
 name "websocketd"
 description "Web socket server"
-authors  "George Zakhour" "Orfeo Da Vià"
+authors "George Zakhour" "Orfeo Da Vià"
 license "MIT"
-
-buildRequirements "allowWarnings"
+dependency "async" version="~master"

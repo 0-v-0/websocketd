@@ -1,6 +1,6 @@
 module websocketd;
 
-public import websocketd.checkpoint,
+public import
 	websocketd.frame,
 	websocketd.request,
 	websocketd.server
