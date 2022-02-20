@@ -10,7 +10,7 @@ import
 
 alias
 	PeerID = int,
-	ReqHandler = void function(WSServer, Request),
+	ReqHandler = void function(WSServer, WSClient, Request),
 	WSServer = WebSocketServer;
 
 struct WSClient {
@@ -59,14 +59,22 @@ class WebSocketServer {
 	void onBinaryMessage(WSClient, ubyte[]) nothrow {}
 
 	void add(Socket socket) nothrow {
-		clients[WSClient(socket).id] = socket;
+		if (clients.length > maxConnections) {
+			try infof("Maximum number of connections reached (%u)", maxConnections); catch(Exception) {}
+			socket.close();
+		} else
+			clients[WSClient(socket).id] = socket;
 	}
 
 	void remove(int id) nothrow {
 		map.remove(id);
+		if (auto client = clients[id]) {
+			onClose(WSClient(client));
+			try infof("Closing connection #%d", id); catch(Exception) {}
+			client.shutdown(SocketShutdown.BOTH);
+			client.close();
+		}
 		clients.remove(id);
-		onClose(WSClient(clients[id]));
-		try infof("Closing connection #%d", id); catch(Exception) {}
 	}
 
 	void run(size_t bufferSize = 1024)(ushort port) {
@@ -124,17 +132,21 @@ class WebSocketServer {
 		if (!key) {
 			if (handler)
 				try
-					handler(this, req);
+					handler(this, client, req);
 				catch(Exception) {}
 			return false;
 		}
 
-		if (client.send(
-			"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ") < 0)
-			return false;
-		if (client.send(Base64.encode(sha1Of(*key ~ MAGIC))) < 0)
-			return false;
-		if (client.send("\r\n\r\n") < 0)
+		try {
+			auto socket = client.socket;
+			if (socket.send(
+				"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ") < 0)
+				return false;
+			if (socket.send(Base64.encode(sha1Of(*key ~ MAGIC))) < 0)
+				return false;
+			if (socket.send("\r\n\r\n") < 0)
+				return false;
+		} catch(Exception)
 			return false;
 		int id = client.id;
 		if (map[id])
@@ -151,7 +163,7 @@ private nothrow:
 	void onReceive(WSClient client, const scope ubyte[] data) @trusted {
 		import std.algorithm : swap;
 
-		try tracef("Received %u bytes from %d: %s", data.length, client.id, data); catch(Exception) {}
+		try tracef("Received %u bytes from %d", data.length, client.id); catch(Exception) {}
 
 		if (map[client.id].ptr) {
 			int id = client.id;

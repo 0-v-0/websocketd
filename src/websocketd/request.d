@@ -19,7 +19,7 @@ struct Request {
 		if (!msg.endsWith("\r\n\r\n"))
 			return req;
 
-		size_t i = 0, pos;
+		size_t i, pos;
 
 		// get method
 		for (; i < msg.length; i++)
