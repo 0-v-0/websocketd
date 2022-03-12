@@ -1,41 +1,43 @@
 module websocketd.server;
 
-import
-	async.net.tcplistener,
-	std.array,
-	std.socket,
-	std.experimental.logger,
-	websocketd.frame,
-	websocketd.request;
+import async.net.tcplistener,
+std.socket,
+std.experimental.logger,
+websocketd.frame,
+websocketd.request;
 
 alias
-	PeerID = int,
-	ReqHandler = void function(WSServer, WSClient, Request),
-	WSServer = WebSocketServer;
+PeerID = int,
+ReqHandler = void function(WSServer, WSClient, in Request),
+WSServer = WebSocketServer;
 
 struct WSClient {
 	Socket socket;
 	alias socket this;
 
-	@property auto id() { return cast(int)handle; }
+	@property auto id() {
+		return cast(int)handle;
+	}
 
-	int send(T)(T msg) {
+	int send(T)(in T msg) {
 		import std.traits;
 
 		static if (isSomeString!T) {
 			import std.string : representation;
 
 			auto bytes = msg.representation;
-			auto frame = Frame(true, Op.TEXT, false, State.done, [0, 0, 0, 0], msg.length, bytes.dup);
+			auto frame = Frame(true, Op.TEXT, false, State.done, [0, 0, 0, 0], msg.length, bytes);
 		} else {
 			alias bytes = msg;
 			auto frame = Frame(true, Op.BINARY, false, State.done, [0, 0, 0, 0], msg.length, msg);
 		}
 		auto data = frame.serialize;
 		try {
-			tracef("Sending %u bytes to #%d in one frame of %u bytes long", bytes.length, id, data.length);
+			tracef("Sending %u bytes to #%d in one frame of %u bytes long", bytes.length, id, data
+					.length);
 			return cast(int)socket.send(data);
-		} catch(Exception) return -1;
+		} catch (Exception)
+			return -1;
 	}
 }
 
@@ -52,7 +54,7 @@ class WebSocketServer {
 		map = new typeof(map);
 		clients = new typeof(clients);
 	}
-
+	// dfmt off
 	void onOpen(WSClient, Request) nothrow {}
 	void onClose(WSClient) nothrow {}
 	void onTextMessage(WSClient, string) nothrow {}
@@ -77,6 +79,7 @@ class WebSocketServer {
 		clients.remove(id);
 	}
 
+	// dfmt on
 	void run(size_t bufferSize = 1024)(ushort port) {
 		import std.datetime;
 
@@ -116,37 +119,41 @@ class WebSocketServer {
 		return WSClient(socket).send(msg);
 	}
 
-	bool performHandshake(WSClient client, in ubyte[] msg, out Request req, ReqHandler handler = null) nothrow {
-		import std.base64 : Base64;
-		import std.digest.sha : sha1Of;
+	bool performHandshake(WSClient client, in ubyte[] msg, out Request req) nothrow {
+		import sha1ct : sha1Of;
 		import std.conv : to;
 		import std.uni : toLower;
+		import tame.base64 : encode;
 
 		enum MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
-			KEY = "Sec-WebSocket-Key".toLower;
+			KEY = "Sec-WebSocket-Key".toLower,
+			KEY_MAXLEN = 192 - MAGIC.length;
 		req = Request.parse(msg);
 		if (!req.done)
 			return false;
 
 		auto key = KEY in req.headers;
-		if (!key) {
+		auto len = (*key).length;
+		if (!key || len > KEY_MAXLEN) {
 			if (handler)
 				try
 					handler(this, client, req);
-				catch(Exception) {}
+				catch (Exception) {
+				}
 			return false;
 		}
+		char[256] buf = void;
+		buf[0 .. len] = *key;
+		buf[len .. len + MAGIC.length] = MAGIC;
 
 		try {
 			auto socket = client.socket;
 			if (socket.send(
-				"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ") < 0)
+					"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ") < 0 ||
+				socket.send(encode(sha1Of(buf), buf)) < 0 ||
+				socket.send("\r\n\r\n") < 0)
 				return false;
-			if (socket.send(Base64.encode(sha1Of(*key ~ MAGIC))) < 0)
-				return false;
-			if (socket.send("\r\n\r\n") < 0)
-				return false;
-		} catch(Exception)
+		} catch (Exception)
 			return false;
 		int id = client.id;
 		if (map[id])
@@ -163,22 +170,28 @@ private nothrow:
 	void onReceive(WSClient client, const scope ubyte[] data) @trusted {
 		import std.algorithm : swap;
 
-		try tracef("Received %u bytes from %d", data.length, client.id); catch(Exception) {}
+		try
+			tracef("Received %u bytes from %d", data.length, client.id);
+		catch (Exception) {
+		}
 
 		if (map[client.id].ptr) {
 			int id = client.id;
-			auto dat = cast(ubyte[])data;
-			Frame prevFrame = id.parse(dat);
-			for(;;) {
+			Frame prevFrame = id.parse(data);
+			for (;;) {
 				handleFrame(WSClient(client), prevFrame);
 				auto newFrame = id.parse([]);
-				if (newFrame == prevFrame) break;
+				if (newFrame == prevFrame)
+					break;
 				swap(newFrame, prevFrame);
 			}
 		} else {
 			Request req = void;
-			if (performHandshake(client, data, req, handler)) {
-				try infof("Handshake with %d done (path=%s)", client.id, req.path); catch(Exception) {}
+			if (performHandshake(client, data, req)) {
+				try
+					infof("Handshake with %d done (path=%s)", client.id, req.path);
+				catch (Exception) {
+				}
 				onOpen(WSClient(client), req);
 			}
 		}
@@ -188,27 +201,37 @@ private nothrow:
 		try
 			tracef("From client %s received frame: done=%s; fin=%s; op=%s; length=%u",
 				client.id, frame.done, frame.fin, frame.op, frame.length);
-		catch(Exception) {}
+		catch (Exception) {
+		}
 		if (!frame.done)
 			return;
 		switch (frame.op) {
-			case Op.CONT: return handleCont(client, frame);
-			case Op.TEXT: return handle!false(client, frame);
-			case Op.BINARY: return handle!true(client, frame);
-			case Op.PING:
-				enum pong = Frame(true, Op.PONG, false, State.done, [0, 0, 0, 0], 0, []).serialize;
-				try
-					client.send(pong);
-				catch(Exception) {}
-				return;
-			case Op.PONG:
-				try tracef("Received pong from %s", client.id); catch(Exception) {}
-				return;
-			default: return remove(client.id);
+		case Op.CONT:
+			return handleCont(client, frame);
+		case Op.TEXT:
+			return handle!false(client, frame);
+		case Op.BINARY:
+			return handle!true(client, frame);
+		case Op.PING:
+			enum pong = Frame(true, Op.PONG, false, State.done, [0, 0, 0, 0], 0, [
+					]).serialize;
+			try
+				client.send(pong);
+			catch (Exception) {
+			}
+			return;
+		case Op.PONG:
+			try
+				tracef("Received pong from %s", client.id);
+			catch (Exception) {
+			}
+			return;
+		default:
+			return remove(client.id);
 		}
 	}
 
-	import std.format;
+	import std.array, std.format;
 
 	void handleCont(WSClient client, Frame frame)
 	in (!client.id || map[client.id], "Client #%d is used before handshake".format(client.id)) {
@@ -235,7 +258,7 @@ private nothrow:
 	in (!map[client.id].length, "Protocol error") {
 		if (frame.fin) {
 			static if (binary)
-				onBinaryMessage(client, frame.data);
+				onBinaryMessage(client, cast(ubyte[])frame.data);
 			else
 				onTextMessage(client, cast(string)frame.data);
 		} else

@@ -19,7 +19,7 @@ struct Frame {
 	State state;
 	ubyte[4] mask;
 	ulong length;
-	ubyte[] data;
+	const(ubyte)[] data;
 
 	invariant(op < 16);
 
@@ -64,14 +64,14 @@ struct Frame {
 	}
 }
 
-auto next(size_t n = 1)(ref ubyte[] data, size_t m = n)
+auto next(size_t n = 1)(ref const(ubyte)[] data, size_t m = n)
 in (data.length >= m, "Insufficient data")
 {
 	static if (n == 1) {
 		ubyte b = data[0];
 		data = data[1 .. $];
 	} else {
-		ubyte[] b = data[0 .. m];
+		auto b = data[0 .. m];
 		data = data[m .. $];
 	}
 	return b;
@@ -96,8 +96,8 @@ enum State : ubyte {
 	prev_done
 }
 
-Frame parse(int source, ubyte[] data) nothrow {
-	static ubyte[][int] dataBySource;
+Frame parse(int source, const(ubyte)[] data) nothrow {
+	static const(ubyte)[][int] dataBySource;
 	static Frame[int] frames;
 
 	Frame frame;
