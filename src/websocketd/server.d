@@ -133,8 +133,7 @@ class WebSocketServer {
 			return false;
 
 		auto key = KEY in req.headers;
-		auto len = (*key).length;
-		if (!key || len > KEY_MAXLEN) {
+		if (!key || key.length > KEY_MAXLEN) {
 			if (handler)
 				try
 					handler(this, client, req);
@@ -142,15 +141,18 @@ class WebSocketServer {
 				}
 			return false;
 		}
+		auto len = key.length;
 		char[256] buf = void;
 		buf[0 .. len] = *key;
 		buf[len .. len + MAGIC.length] = MAGIC;
-
 		try {
 			auto socket = client.socket;
 			if (socket.send(
-					"HTTP/1.1 101 Switching Protocol\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ") < 0 ||
-				socket.send(encode(sha1Of(buf), buf)) < 0 ||
+					"HTTP/1.1 101 Switching Protocol\r\n" ~
+					"Upgrade: websocket\r\n" ~
+					"Connection: Upgrade\r\n" ~
+					"Sec-WebSocket-Accept: ") < 0 ||
+				socket.send(encode(sha1Of(buf[0 .. len + MAGIC.length]), buf)) < 0 ||
 				socket.send("\r\n\r\n") < 0)
 				return false;
 		} catch (Exception)
