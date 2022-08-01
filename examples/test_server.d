@@ -4,16 +4,17 @@ import websocketd;
 
 class EchoSocketServer : WSServer {
 	override void onOpen(WSClient client, Request req) {
-		try tracef("Peer %s connect to '%s'", client.id, req.path); catch(Exception) {}
+		try
+			tracef("Peer %s connect to '%s'", client.id, req.path);
+		catch (Exception) {
+		}
 	}
 
 	override void onTextMessage(WSClient client, string msg) {
 		try {
-			tracef("Received message from %s", client.id);
-			tracef("         message: %s", msg);
-			tracef("         message length: %d", msg.length);
 			client.send(msg);
-		} catch(Exception) {}
+		} catch (Exception) {
+		}
 	}
 }
 
@@ -31,11 +32,12 @@ class BroadcastServer : WSServer {
 	override void onTextMessage(WSClient client, string msg) {
 		auto src = client.id;
 		auto srcPath = peers[src];
-		try
+		try {
 			foreach (id, path; peers)
 				if (id != src && path == srcPath)
-					send(clients[id], msg);
-		catch(Exception) {}
+					clients[id].send(msg);
+		} catch (Exception) {
+		}
 	}
 
 	override void onBinaryMessage(WSClient client, ubyte[] msg) {
@@ -45,18 +47,19 @@ class BroadcastServer : WSServer {
 			foreach (id, path; peers)
 				if (id != src && path == srcPath)
 					send(clients[id], msg);
-		catch(Exception) {}
+					catch (Exception) {
+					}
 	}
 }
 
 void main() {
-	version(echo) {
+	version (echo) {
 		pragma(msg, "echo");
-		auto server = new EchoSocketServer();
+		auto server = new EchoSocketServer;
 	}
-	version(broadcast) {
+	version (broadcast) {
 		pragma(msg, "broadcast");
-		auto server = new BroadcastServer();
+		auto server = new BroadcastServer;
 	}
 
 	server.run(10301);

@@ -1,23 +1,23 @@
 module websocketd.server;
 
-import async.net.tcplistener,
-std.socket,
-std.experimental.logger,
-websocketd.frame,
-websocketd.request;
+import
+	async,
+	std.array,
+	std.socket,
+	std.experimental.logger,
+	websocketd.frame,
+	websocketd.request;
 
 alias
-PeerID = int,
-ReqHandler = void function(WSServer, WSClient, in Request),
-WSServer = WebSocketServer;
+	PeerID = int,
+	ReqHandler = void function(WSServer, WSClient, in Request),
+	WSServer = WebSocketServer;
 
 struct WSClient {
-	Socket socket;
-	alias socket this;
+	TcpClient client;
+	alias client this;
 
-	@property auto id() {
-		return cast(int)handle;
-	}
+	@property auto id() { return fd; }
 
 	int send(T)(in T msg) {
 		import std.traits;
@@ -33,93 +33,52 @@ struct WSClient {
 		}
 		auto data = frame.serialize;
 		try {
-			tracef("Sending %u bytes to #%d in one frame of %u bytes long", bytes.length, id, data
-					.length);
-			return cast(int)socket.send(data);
-		} catch (Exception)
-			return -1;
+			tracef("Sending %u bytes to #%d in one frame of %u bytes long", bytes.length, id, data.length);
+			return client.send(data);
+		} catch(Exception) return -1;
 	}
 }
 
-class WebSocketServer {
+class WebSocketServer : EventLoop {
 	import async.container.map;
 
-	TcpListener listener;
 	protected Map!(PeerID, Frame[]) map;
-	Map!(PeerID, Socket) clients;
 	ReqHandler handler;
-	size_t maxConnections = 1000;
 
-	this() {
-		map = new typeof(map);
-		clients = new typeof(clients);
-	}
-	// dfmt off
 	void onOpen(WSClient, Request) nothrow {}
 	void onClose(WSClient) nothrow {}
 	void onTextMessage(WSClient, string) nothrow {}
 	void onBinaryMessage(WSClient, ubyte[]) nothrow {}
 
-	void add(Socket socket) nothrow {
-		if (clients.length > maxConnections) {
-			try infof("Maximum number of connections reached (%u)", maxConnections); catch(Exception) {}
-			socket.close();
-		} else
-			clients[WSClient(socket).id] = socket;
+	this(uint workerThreadNum = 0)
+	{
+		this(new TcpListener, workerThreadNum);
 	}
 
-	void remove(int id) nothrow {
-		map.remove(id);
-		if (auto client = clients[id]) {
-			onClose(WSClient(client));
-			try infof("Closing connection #%d", id); catch(Exception) {}
-			client.shutdown(SocketShutdown.BOTH);
-			client.close();
-		}
-		clients.remove(id);
+	this(TcpListener listener, uint workerThreadNum = 0)
+	{
+		super(listener, null, null, &onReceive, null, null, null, workerThreadNum);
+		map = new Map!(PeerID, Frame[]);
 	}
 
-	// dfmt on
-	void run(size_t bufferSize = 1024)(ushort port) {
-		import std.datetime;
-
-		listener = new TcpListener;
-		listener.bind(new InternetAddress("127.0.0.1", port));
-		listener.listen(128);
-
-		infof("Listening on port: %u", port);
-		infof("Maximum allowed connections: %u", maxConnections);
-
-		auto set = new SocketSet(maxConnections + 1);
-		for (;;) {
-			set.add(listener.socket);
-			foreach (s; clients)
-				set.add(s);
-			Socket.select(set, null, null, 30.seconds);
-
-			foreach (socket; clients) {
-				if (!set.isSet(socket))
-					continue;
-				ubyte[bufferSize] buffer = void;
-				long receivedLength = socket.receive(buffer[]);
-				if (receivedLength > 0)
-					onReceive(WSClient(socket), buffer[0 .. receivedLength]);
-				else
-					remove(WSClient(socket).id);
-			}
-
-			if (set.isSet(listener.socket))
-				add(listener.accept());
-
-			set.reset();
-		}
+	override void removeClient(int fd, int err = 0) {
+		map.remove(fd);
+		onClose(WSClient(clients[fd]));
+		try infof("Closing connection #%d", fd); catch(Exception) {}
+		super.removeClient(fd, err);
 	}
 
-	int send(T)(Socket socket, T msg) {
-		return WSClient(socket).send(msg);
+	void run(ushort port) {
+		_listener.bind(new InternetAddress("127.0.0.1", port));
+		_listener.listen(128);
+		super.run();
 	}
 
-	bool performHandshake(WSClient client, in ubyte[] msg, out Request req) nothrow {
+	int send(T)(TcpClient client, T msg) {
+		return WSClient(client).send(msg);
+	}
+
+	bool performHandshake(TcpClient client, in ubyte[] msg, out Request req) nothrow {
 		import sha1ct : sha1Of;
 		import std.conv : to;
 		import std.uni : toLower;
@@ -136,9 +95,8 @@ class WebSocketServer {
 		if (!key || key.length > KEY_MAXLEN) {
 			if (handler)
 				try
-					handler(this, client, req);
-				catch (Exception) {
-				}
+					handler(this, WSClient(client), req);
+				catch (Exception) {}
 			return false;
 		}
 		auto len = key.length;
@@ -146,18 +104,17 @@ class WebSocketServer {
 		buf[0 .. len] = *key;
 		buf[len .. len + MAGIC.length] = MAGIC;
 		try {
-			auto socket = client.socket;
-			if (socket.send(
+			if (client.send(
 					"HTTP/1.1 101 Switching Protocol\r\n" ~
 					"Upgrade: websocket\r\n" ~
 					"Connection: Upgrade\r\n" ~
 					"Sec-WebSocket-Accept: ") < 0 ||
-				socket.send(encode(sha1Of(buf[0 .. len + MAGIC.length]), buf)) < 0 ||
-				socket.send("\r\n\r\n") < 0)
-				return false;
+				client.send(encode(sha1Of(buf[0 .. len + MAGIC.length]), buf)) < 0 ||
+				client.send("\r\n\r\n") < 0)
+			return false;
 		} catch (Exception)
 			return false;
-		int id = client.id;
+		int id = client.fd;
 		if (map[id])
 			map[id].length = 0;
 		else {
@@ -169,16 +126,13 @@ class WebSocketServer {
 	}
 
 private nothrow:
-	void onReceive(WSClient client, const scope ubyte[] data) @trusted {
+	void onReceive(TcpClient client, const scope ubyte[] data) @trusted {
 		import std.algorithm : swap;
 
-		try
-			tracef("Received %u bytes from %d", data.length, client.id);
-		catch (Exception) {
-		}
+		try tracef("Received %u bytes from %d", data.length, client.fd); catch(Exception) {}
 
-		if (map[client.id].ptr) {
-			int id = client.id;
+		if (map[client.fd].ptr) {
+			int id = client.fd;
 			Frame prevFrame = id.parse(data);
 			for (;;) {
 				handleFrame(WSClient(client), prevFrame);
@@ -190,10 +144,7 @@ private nothrow:
 		} else {
 			Request req = void;
 			if (performHandshake(client, data, req)) {
-				try
-					infof("Handshake with %d done (path=%s)", client.id, req.path);
-				catch (Exception) {
-				}
+				try infof("Handshake with %d done (path=%s)", client.fd, req.path); catch(Exception) {}
 				onOpen(WSClient(client), req);
 			}
 		}
@@ -203,37 +154,27 @@ private nothrow:
 		try
 			tracef("From client %s received frame: done=%s; fin=%s; op=%s; length=%u",
 				client.id, frame.done, frame.fin, frame.op, frame.length);
-		catch (Exception) {
-		}
+		catch (Exception) {}
 		if (!frame.done)
 			return;
 		switch (frame.op) {
-		case Op.CONT:
-			return handleCont(client, frame);
-		case Op.TEXT:
-			return handle!false(client, frame);
-		case Op.BINARY:
-			return handle!true(client, frame);
-		case Op.PING:
-			enum pong = Frame(true, Op.PONG, false, State.done, [0, 0, 0, 0], 0, [
-					]).serialize;
-			try
-				client.send(pong);
-			catch (Exception) {
-			}
-			return;
-		case Op.PONG:
-			try
-				tracef("Received pong from %s", client.id);
-			catch (Exception) {
-			}
-			return;
-		default:
-			return remove(client.id);
+			case Op.CONT: return handleCont(client, frame);
+			case Op.TEXT: return handle!false(client, frame);
+			case Op.BINARY: return handle!true(client, frame);
+			case Op.PING:
+				enum pong = Frame(true, Op.PONG, false, State.done, [0, 0, 0, 0], 0, []).serialize;
+				try
+					client.send(pong);
+				catch (Exception) {}
+				return;
+			case Op.PONG:
+				try tracef("Received pong from %s", client.id); catch(Exception) {}
+				return;
+			default: return removeClient(client.id);
 		}
 	}
 
-	import std.array, std.format;
+	import std.format;
 
 	void handleCont(WSClient client, Frame frame)
 	in (!client.id || map[client.id], "Client #%d is used before handshake".format(client.id)) {
