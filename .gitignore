@@ -1,7 +1,9 @@
 .vim-bookmarks
-examples/.dub
 .dub
-libwebsocketd.a
+*.a
+*.lib
+*.exe
+*.pdb
 examples/test_server
 websocketd-test-library
-/dub.selections.json
+dub.selections.json
