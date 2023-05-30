@@ -43,6 +43,7 @@ struct WSClient {
 
 class WebSocketServer {
 	import async.container.map;
+	import std.conv : text;
 
 	TcpListener listener;
 	protected Map!(PeerID, Frame[]) map;
@@ -157,7 +158,7 @@ class WebSocketServer {
 				return false;
 		} catch (Exception)
 			return false;
-		int id = client.id;
+		const id = client.id;
 		if (map[id])
 			map[id].length = 0;
 		else {
@@ -178,7 +179,7 @@ private nothrow:
 		}
 
 		if (map[client.id].ptr) {
-			int id = client.id;
+			const id = client.id;
 			Frame prevFrame = id.parse(data);
 			for (;;) {
 				handleFrame(WSClient(client), prevFrame);
@@ -236,7 +237,7 @@ private nothrow:
 	import std.array, std.format;
 
 	void handleCont(WSClient client, Frame frame)
-	in (!client.id || map[client.id], "Client #%d is used before handshake".format(client.id)) {
+	in (!client.id || map[client.id], text("Client #", client.id, " is used before handshake")) {
 		if (!frame.fin) {
 			if (frame.data.length)
 				map[client.id] ~= frame;
